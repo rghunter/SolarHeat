@@ -7,7 +7,7 @@
 
 #define FAN1 D2 // D2 is TIM3_CH2 GPIOB
 
-IPAddress stats_ip(192, 168, 1, 170);
+IPAddress stats_ip(54, 85, 171, 11);
 
 TMP102 sensor0(0x48);
 TMP102 sensor1(0x49);
@@ -169,7 +169,7 @@ float readTemp(TMP102 &sensor){
     float temp;
     sensor.wakeup();
     temp = sensor.readTempF();
-    //sensor.sleep();
+    sensor.sleep();
     return temp;
 }
 
