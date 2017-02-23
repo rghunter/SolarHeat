@@ -18,8 +18,10 @@ SFE_TSL2561 light;
 //SystemCoreClock = 120MHz, period = 4000 @ 30Khz
 #define PWM_FREQ 30000 // in Hertz (SET YOUR FREQUENCY)
 
+#define MIN_FAN 35
+
 // Loop variables
-int percent = 10, increase = 2;
+int percent = MIN_FAN, increase = 2;
 unsigned long lastTime = 0UL;
 
 // Timer variables
@@ -227,7 +229,7 @@ void loop() {
     unsigned long now = millis();
 
     // Every 5 seconds sample the pit temp
-    if (now-lastTime>=5000UL) {
+    if (now-lastTime>=100UL) {
         // Record time for loop
         lastTime = now;
 
@@ -235,7 +237,11 @@ void loop() {
         percent += increase;
         // Reset if over 100
         if (percent > 100){
-            percent = 0;
+            percent = 100;
+            increase *= -1;
+        }
+        if (percent < MIN_FAN){
+          increase *= -1;
         }
 
         updateOC(FAN1,percent);
@@ -286,7 +292,7 @@ void updateOC(int pin, int percent)
 
     if (percent){
         // Lower duty cycles need a kick start to spin the motor
-        if (30 > percent){
+        if (50 > percent){
 
             // Set the spin up pulse to be 75%
             pulse = (uint16_t) (period - (period+1) * 75 / 100 - 1 );
