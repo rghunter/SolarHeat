@@ -20,15 +20,9 @@ SFE_TSL2561 light;
 
 #define MIN_FAN 35
 
-// Loop variables
-int percent = MIN_FAN, increase = 2;
-unsigned long lastTime = 0UL;
+double topTemp, bottomTemp, lux;
 
-// Timer variables
-uint16_t period = 0;
-TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure; //Time base structure for timer 3
-NVIC_InitTypeDef        NVIC_InitStructure;    //Nested Vector Interrupt Controller Initialisation Structure
-TIM_OCInitTypeDef       TIM_OCInitStructure;   //Output compare init structure for PWM
+int fanSpeed;
 
 bool gain;
 unsigned int ms;
@@ -38,11 +32,15 @@ StatsD statsd_client(stats_ip, 8125);
 
 void setup() {
 
-    //Setup statsd
-
+    //Register variables
+    Particle.variable("TopTemp", topTemp);
+    Particle.variable("BottomTemp", bottomTemp);
+    Particle.variable("Lux", lux);
+    Particle.variable("FanSpeed", fanSpeed);
 
     // Start serial at 9600 baud
     Serial.begin(9600);
+
 
     statsd_client.begin();
 
@@ -53,57 +51,6 @@ void setup() {
     Serial.println("Started up!");
     delay(2000); // wait for human on the serial monitor
 
-    /* Compute the period value to generate a clock freq of 30KHz, there are other schools that suggest (SystemCoreClock/2)/30000-1 is the way to go since the STM32F2 has a 60Mhz timer clock */
-    // With some experimentation, a period of 4000 worked well with my fan
-    period = (uint16_t)(((SystemCoreClock) / PWM_FREQ)-1);
-    /* Compute the pulse value to generate a PWM signal with variable duty cycle */
-    int pulse = period; // Just set it to the period to start off, which should be 0 duty cycle effectively
-
-    //period = (uint16_t)(SystemCoreClock / 2000)-1;
-
-    /* GPIOB clock enable */
-    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
-
-    /* Initialise GPIO for PWM function */
-    GPIO_InitTypeDef        GPIO_InitStructure;    //GPIO Initialisation Structure
-    /* Initialize D2/PB5, Alternative Function, 100Mhz, Output, Push-pull*/
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_100MHz;
-    GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
-    GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP ;
-    GPIO_Init(GPIOB, &GPIO_InitStructure); // Note the GPIOB.
-    // Consult https://docs.particle.io/datasheets/photon-datasheet/#pin-out-diagrams for pinout, pay attention to the STM32 Pin column, ie PB5
-    // the 'B' in PB5 means you should use the 'B' GPIO, GPIOB.  PA4 would use GPIOA.
-
-    // Map the pin to the timer
-    GPIO_PinAFConfig(GPIOB, GPIO_PinSource0, GPIO_AF_TIM3);
-    /* TIMER 3 clock enable */
-    RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);
-
-    /* Timer Base configuration */
-    TIM_TimeBaseStructure.TIM_Prescaler = 0;
-    //TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_CenterAligned3; // symmetrical PWM
-    TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
-    TIM_TimeBaseStructure.TIM_Period = period;
-    TIM_TimeBaseStructure.TIM_ClockDivision = 0;
-    TIM_TimeBaseInit(TIM3, &TIM_TimeBaseStructure); // TIM3 = Timer 3
-
-    //Initialise Output Compare Structure
-
-    //pulse = (uint16_t) ((period-1)/(100.0/dutyCycle));
-
-    /* Timer 3 Channel 2 PWM output configuration */
-    TIM_OCStructInit(&TIM_OCInitStructure);
-    TIM_OCInitStructure.TIM_OCMode = TIM_OCMode_PWM2; // can't find a decent reference to say whats the diff between PWM1 and PWM2
-    TIM_OCInitStructure.TIM_OutputState = TIM_OutputState_Enable;
-    TIM_OCInitStructure.TIM_Pulse = pulse;
-    TIM_OCInitStructure.TIM_OCPolarity = TIM_OCPolarity_High;
-
-    // Channel 2 init timer 3
-    TIM_OC2Init(TIM3, &TIM_OCInitStructure);
-    TIM_OC2PreloadConfig(TIM3, TIM_OCPreload_Enable);
-    //TIM_ARRPreloadConfig(TIM3, ENABLE); // don't seem to need this
 
     sensor0.begin();  // Join I2C bus
     sensor1.begin();
@@ -158,6 +105,10 @@ void setup() {
 
     Serial.println("Powerup...");
     light.setPowerUp();
+
+    setFanSpeed(75);
+
+
 
     // The sensor will now gather light during the integration time.
     // After the specified time, you can retrieve the result from the sensor.
@@ -222,52 +173,32 @@ bool readLight(double &lux, SFE_TSL2561 &light_sensor){
     }
     return false;
 }
-
+void setFanSpeed(int percent){
+  SINGLE_THREADED_BLOCK() {
+    fanSpeed = percent;
+    float pct = (float)percent/100.0;
+    int duty = pct * 255;
+    analogWrite(FAN1, duty, PWM_FREQ);
+  }
+}
 void loop() {
+  statsd_client.gauge("solarheat.fanspeed", fanSpeed);
+  float temperature1;
+  float temperature0;
+  double lux;
 
-    // What is the time mr wolf?
-    unsigned long now = millis();
 
-    // Every 5 seconds sample the pit temp
-    if (now-lastTime>=100UL) {
-        // Record time for loop
-        lastTime = now;
-
-        // Increase the duty percent
-        percent += increase;
-        // Reset if over 100
-        if (percent > 100){
-            percent = 100;
-            increase *= -1;
-        }
-        if (percent < MIN_FAN){
-          increase *= -1;
-        }
-
-        updateOC(FAN1,percent);
-
-        //analogWrite2(D0, percent);
-
-        Serial.print("fanSpeed is: ");
-        Serial.print(percent);
-        statsd_client.gauge("solarheat.fanspeed", percent);
-
-    }
-    float temperature1;
-    float temperature0;
-    double lux;
-
-    temperature0 = readTemp(sensor0);
-    temperature1 = readTemp(sensor1);
+  temperature0 = readTemp(sensor0);
+  temperature1 = readTemp(sensor1);
 
     // Print temperature and alarm state
-    Serial.print("Temperature: ");
-    Serial.print(temperature0);
-    Serial.print(", ");
-    Serial.println(temperature1);
+  Serial.print("Temperature: ");
+  Serial.print(temperature0);
+  Serial.print(", ");
+  Serial.println(temperature1);
 
-    statsd_client.gauge("solarheat.baseTemp", temperature0);
-    statsd_client.gauge("solarheat.topTemp", temperature1);
+  statsd_client.gauge("solarheat.baseTemp", temperature0);
+  statsd_client.gauge("solarheat.topTemp", temperature1);
 
 
 
@@ -281,54 +212,4 @@ void loop() {
     Serial.println(lux);
     // May as well slow down the loop
     delay(1000);
-}
-
-void updateOC(int pin, int percent)
-{
-    Serial.print("IN update for pin ");
-    Serial.println(pin);
-
-    int pulse = 0;
-
-    if (percent){
-        // Lower duty cycles need a kick start to spin the motor
-        if (50 > percent){
-
-            // Set the spin up pulse to be 75%
-            pulse = (uint16_t) (period - (period+1) * 75 / 100 - 1 );
-
-            Serial.print("kick start pulse ");
-            Serial.println(pulse);
-            // Set the CCR to new pulse value
-            updateCCR(pin, pulse);
-            // Delay time for the spin up
-            delay (300);
-        }
-
-        // Interestingly, with the current clock settings 0 = full duty, pulse = period is 0 duty cycle
-        // Its like its counting down instead of up
-        // Set the pulse based on percent argument
-        pulse = (uint16_t) (period - (period+1) * percent / 100 - 1 );
-    }
-    else {
-        // pulse = period is 0 duty cycle, strange but true
-        pulse = period;
-    }
-
-    Serial.print("pulse is: ");
-    Serial.println(pulse);
-
-    // Set the CCR to new pulse value
-    updateCCR(pin, pulse);
-}
-
-void updateCCR(int pin, int dutyCycle){
-    STM32_Pin_Info* PIN_MAP = HAL_Pin_Map();
-
-    TIM_OCInitStructure.TIM_Pulse = dutyCycle;
-
-    Serial.println("modifying TIM2");
-    PIN_MAP[pin].timer_peripheral-> CCR2 = TIM_OCInitStructure.TIM_Pulse;
-
-
 }
